@@ -6,6 +6,8 @@ from typing import List, Tuple
 import panel as pn
 from bokeh.plotting import figure
 from bokeh.events import Tap
+from bokeh.models import LinearColorMapper
+from bokeh.palettes import Greys256
 
 # ----------------------------
 # Palettes (first = your 5)
@@ -94,14 +96,15 @@ def golden_angle_positions(n, radius_min=0.6, radius_max=2.6):
     return centers, radii
 
 def draw_scene(fig, blobs, hearts, add_grain=True):
-    # Remove previous glyph renderers (keep axes/grids)
+    # 清理旧的图形（保留注释/底层）
     fig.renderers = [r for r in fig.renderers if getattr(r, "level", "") in ("underlay", "annotation")]
 
-    # Background grain
+    # ✅ Bokeh 3.x：用 color_mapper 而不是 palette
     if add_grain:
         H, W = 200, 200
         noise = np.random.rand(H, W)
-        fig.image(image=[noise], x=-4, y=-4, dw=8, dh=8, palette="Greys256", alpha=0.10)
+        cm = LinearColorMapper(palette=Greys256)
+        fig.image(image=[noise], x=-4, y=-4, dw=8, dh=8, color_mapper=cm, alpha=0.10)
 
     # Blobs
     for b in blobs:
@@ -251,7 +254,6 @@ class PosterApp:
     def on_toggle_mode(self, _):
         self.mode = "blob" if self.mode == "heart" else "heart"
         self.b_mode.name = f"Mode: Add {self.mode.upper()}"
-        # no re-render needed
 
     def on_tap(self, event: Tap):
         if event.x is None or event.y is None:
@@ -293,10 +295,7 @@ class PosterApp:
 # ---------- bootstrap ----------
 pn.extension()
 _app = PosterApp()
-# Exportable/servable object for `panel serve app.py`
-# Visiting /app will show the layout when using `panel serve app.py --show`
 app = _app.view
 
 if __name__ == "__main__":
-    # You can also run: python app.py (this will call panel.serve)
     pn.serve({"app": app}, show=True)
