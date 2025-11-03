@@ -206,17 +206,21 @@ def all_shapes():
 
 # ---------- Plotly render ----------
 def render_plotly(blobs, hearts):
+    import plotly.graph_objects as go
     fig = go.Figure()
-    # Background
+
+    # 1) 用白色背景，便于确认颜色
     fig.update_layout(
         width=880, height=880,
         xaxis=dict(range=[-4,4], showgrid=False, zeroline=False, visible=False),
         yaxis=dict(range=[-4,4], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1),
-        plot_bgcolor="rgb(13,15,16)", paper_bgcolor="rgb(13,15,16)",
-        margin=dict(l=0, r=0, t=40, b=0)
+        plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(l=0, r=0, t=40, b=0),
+        # 2) 只发 click 事件，不触发“选中/未选中”状态（否则 Plotly 会把未选中层整体变暗）
+        clickmode="event"
     )
 
-    # Blobs
+    # 3) 画 blobs（强制 opacity=1，且禁用选中/未选中淡化）
     for b in blobs:
         x, y = make_blob(n_points=b["points"], radius=b["radius"], wobble=b["wobble"], irregularity=0.12)
         x, y = x + b["cx"], y + b["cy"]
@@ -226,10 +230,14 @@ def render_plotly(blobs, hearts):
             fill="toself",
             line=dict(width=0),
             fillcolor=rgba_to_css(b["color"]),
+            opacity=1.0,
             hoverinfo="skip",
-            showlegend=False
+            showlegend=False,
+            selected=dict(marker=dict(opacity=1), line=dict(width=0)),
+            unselected=dict(marker=dict(opacity=1), line=dict(width=0)),
         ))
-    # Hearts
+
+    # 3) 画 hearts（同上）
     for h in hearts:
         hx, hy = make_heart(n_points=h["points"], scale=h["scale"], offset=(h["cx"], h["cy"]))
         fig.add_trace(go.Scatter(
@@ -238,11 +246,14 @@ def render_plotly(blobs, hearts):
             fill="toself",
             line=dict(width=0),
             fillcolor=rgba_to_css(h["color"]),
+            opacity=1.0,
             hoverinfo="skip",
-            showlegend=False
+            showlegend=False,
+            selected=dict(marker=dict(opacity=1), line=dict(width=0)),
+            unselected=dict(marker=dict(opacity=1), line=dict(width=0)),
         ))
 
-    # Invisible dense grid to capture clicks anywhere
+    # 4) 点击捕获层：只发事件，不让它真的“选中”任何东西
     gx = np.linspace(-4, 4, 90)
     gy = np.linspace(-4, 4, 90)
     GX, GY = np.meshgrid(gx, gy)
@@ -254,8 +265,12 @@ def render_plotly(blobs, hearts):
         showlegend=False,
         name="clickgrid"
     ))
-    fig.update_layout(clickmode="event+select")
+
+    # 保险：清空任何可能的选中状态（有些浏览器上第一次点击会残留）
+    fig.update_traces(selectedpoints=None)
+
     return fig
+
 
 name, _ = PALETTES[st.session_state.palette_idx]
 st.markdown(f"**Palette:** {name} | **Mode:** {st.session_state.mode.upper()} | **Added:** {len(st.session_state.added)}")
