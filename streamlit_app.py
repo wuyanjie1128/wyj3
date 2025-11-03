@@ -1,13 +1,9 @@
+import streamlit as st
 import numpy as np
 import random
-from dataclasses import dataclass
-from typing import List, Tuple
-
-import panel as pn
-from bokeh.plotting import figure
-from bokeh.events import Tap
-from bokeh.models import LinearColorMapper
-from bokeh.palettes import Greys256
+from typing import Tuple, List
+import plotly.graph_objects as go
+from streamlit_plotly_events import plotly_events
 
 # ----------------------------
 # Palettes (first = your 5)
@@ -36,13 +32,11 @@ PALETTES = [
     ]),
 ]
 
-def get_palette(idx):
-    idx = int(np.clip(idx, 0, len(PALETTES)-1))
-    return PALETTES[idx]
+def rgba_to_css(rgba: Tuple[float, float, float, float]) -> str:
+    r, g, b, a = rgba
+    return f"rgba({int(r*255)},{int(g*255)},{int(b*255)},{a:.3f})"
 
-# ----------------------------
-# Geometry helpers
-# ----------------------------
+# Geometry helpers (same math, Streamlit-safe)
 def chaikin_smooth(x, y, rounds=2, closed=True):
     pts = np.column_stack([x, y])
     if closed:
@@ -58,7 +52,6 @@ def chaikin_smooth(x, y, rounds=2, closed=True):
         pts = pts[:-1]
     return pts[:,0], pts[:,1]
 
-# Shapes
 def make_blob(n_points=220, radius=1.0, wobble=0.35, irregularity=0.15):
     angles = np.linspace(0, 2*np.pi, n_points, endpoint=False)
     k = random.choice([2,3,4,5,7])
@@ -75,16 +68,6 @@ def make_heart(n_points=360, scale=1.0, offset=(0,0)):
     x, y = scale*x + offset[0], scale*y + offset[1]
     return chaikin_smooth(x, y, rounds=1, closed=True)
 
-# ----------------------------
-# Drawing helpers (Bokeh)
-# ----------------------------
-def rgba_to_hex_alpha(rgba: Tuple[float, float, float, float]) -> Tuple[str, float]:
-    r, g, b, a = rgba
-    r255 = int(np.clip(round(r*255), 0, 255))
-    g255 = int(np.clip(round(g*255), 0, 255))
-    b255 = int(np.clip(round(b*255), 0, 255))
-    return f"#{r255:02x}{g255:02x}{b255:02x}", float(a)
-
 def golden_angle_positions(n, radius_min=0.6, radius_max=2.6):
     phi = np.pi*(3 - np.sqrt(5))
     centers, radii = [], []
@@ -95,34 +78,6 @@ def golden_angle_positions(n, radius_min=0.6, radius_max=2.6):
         centers.append((cx, cy)); radii.append(r)
     return centers, radii
 
-def draw_scene(fig, blobs, hearts, add_grain=True):
-    # 清理旧的图形（保留注释/底层）
-    fig.renderers = [r for r in fig.renderers if getattr(r, "level", "") in ("underlay", "annotation")]
-
-    # ✅ Bokeh 3.x：用 color_mapper 而不是 palette
-    if add_grain:
-        H, W = 200, 200
-        noise = np.random.rand(H, W)
-        cm = LinearColorMapper(palette=Greys256)
-        fig.image(image=[noise], x=-4, y=-4, dw=8, dh=8, color_mapper=cm, alpha=0.10)
-
-    # Blobs
-    for b in blobs:
-        x, y = make_blob(n_points=b["points"], radius=b["radius"],
-                         wobble=b["wobble"], irregularity=0.12)
-        x, y = x + b["cx"], y + b["cy"]
-        color_hex, _ = rgba_to_hex_alpha(b["color"])
-        fig.patch(x, y, fill_color=color_hex, fill_alpha=0.55, line_color=None)
-
-    # Hearts
-    for h in hearts:
-        hx, hy = make_heart(n_points=h["points"], scale=h["scale"], offset=(h["cx"], h["cy"]))
-        color_hex, _ = rgba_to_hex_alpha(h["color"])
-        fig.patch(hx, hy, fill_color=color_hex, fill_alpha=0.75, line_color=None)
-
-# ----------------------------
-# Data factories
-# ----------------------------
 def make_default_blobs(n, wobble, palette, rng):
     blobs = []
     centers, radii = golden_angle_positions(n)
@@ -155,147 +110,188 @@ def make_default_hearts(n, rng):
         })
     return hearts
 
-# ----------------------------
-# Web App (Panel + Bokeh)
-# ----------------------------
-@dataclass
-class ShapeStore:
-    base_blobs: List[dict]
-    base_hearts: List[dict]
-    added: List[dict]
+# ---------- Streamlit state ----------
+def init_state():
+    if "rng_seed" not in st.session_state:
+        st.session_state.rng_seed = 42
+    if "rng" not in st.session_state:
+        st.session_state.rng = np.random.default_rng(st.session_state.rng_seed)
+    if "layers" not in st.session_state:
+        st.session_state.layers = 8
+    if "wobble" not in st.session_state:
+        st.session_state.wobble = 0.35
+    if "palette_idx" not in st.session_state:
+        st.session_state.palette_idx = 0
+    if "base_blobs" not in st.session_state:
+        _, pal = PALETTES[st.session_state.palette_idx]
+        st.session_state.base_blobs = make_default_blobs(st.session_state.layers, st.session_state.wobble, pal, st.session_state.rng)
+    if "base_hearts" not in st.session_state:
+        st.session_state.base_hearts = make_default_hearts(10, st.session_state.rng)
+    if "added" not in st.session_state:
+        st.session_state.added: List[dict] = []
+    if "mode" not in st.session_state:
+        st.session_state.mode = "heart"
 
-class PosterApp:
-    def __init__(self, seed=42, init_layers=8, init_wobble=0.35, init_palette=0, init_hearts=10):
-        random.seed(seed)
-        np.random.seed(seed)
-        self.rng = np.random.default_rng(seed)
+init_state()
 
-        self.layers = int(init_layers)
-        self.wobble = float(init_wobble)
-        self.palette_idx = int(init_palette)
-        _, self.palette = get_palette(self.palette_idx)
+st.set_page_config(page_title="Poster App (Streamlit)", layout="wide")
 
-        self.store = ShapeStore(
-            base_blobs = make_default_blobs(self.layers, self.wobble, self.palette, self.rng),
-            base_hearts = make_default_hearts(init_hearts, self.rng),
-            added = []
-        )
+# ---------- Sidebar controls ----------
+st.sidebar.title("Controls")
+layers = st.sidebar.slider("Layers", 6, 12, st.session_state.layers, 1)
+wobble = st.sidebar.slider("Wobble", 0.10, 0.70, float(st.session_state.wobble), 0.01)
+palette_idx = st.sidebar.selectbox("Palette", list(range(len(PALETTES))), index=st.session_state.palette_idx,
+                                   format_func=lambda i: PALETTES[i][0])
 
-        # --- Figure ---
-        self.fig = figure(
-            x_range=(-4, 4), y_range=(-4, 4),
-            match_aspect=True, width=880, height=880,
-            tools="tap", toolbar_location=None, background_fill_color="#0d0f10"
-        )
-        self.fig.grid.visible = False
-        self.fig.axis.visible = False
+col1, col2, col3 = st.sidebar.columns(3)
+toggle = col1.button(f"Mode: {'Add BLOB' if st.session_state.mode=='heart' else 'Add HEART'}")
+clear = col2.button("Clear Added")
+addrand = col3.button("Add Random")
 
-        # --- Controls ---
-        self.title = pn.pane.Markdown("", sizing_mode="stretch_width")
-        self.s_layers  = pn.widgets.IntSlider(name="Layers", start=6, end=12, step=1, value=self.layers)
-        self.s_wobble  = pn.widgets.FloatSlider(name="Wobble", start=0.10, end=0.70, step=0.01, value=self.wobble)
-        self.s_palette = pn.widgets.IntSlider(name="Palette", start=0, end=len(PALETTES)-1, step=1, value=self.palette_idx)
+if toggle:
+    st.session_state.mode = "blob" if st.session_state.mode == "heart" else "heart"
 
-        self.b_mode  = pn.widgets.Button(name="Mode: Add HEART", button_type="primary")
-        self.b_clear = pn.widgets.Button(name="Clear Added", button_type="warning", button_style="outline")
+if clear:
+    st.session_state.added = []
 
-        self.mode = "heart"
+# Apply control changes
+changed = False
+if layers != st.session_state.layers:
+    st.session_state.layers = int(layers); changed = True
+if abs(wobble - st.session_state.wobble) > 1e-9:
+    st.session_state.wobble = float(wobble); changed = True
+if palette_idx != st.session_state.palette_idx:
+    st.session_state.palette_idx = int(palette_idx); changed = True
 
-        # --- Events ---
-        self.s_layers.param.watch(self.on_layers_change, "value")
-        self.s_wobble.param.watch(self.on_wobble_change, "value")
-        self.s_palette.param.watch(self.on_palette_change, "value")
-        self.b_clear.on_click(self.on_clear_added)
-        self.b_mode.on_click(self.on_toggle_mode)
-        self.fig.on_event(Tap, self.on_tap)
+if changed:
+    name, pal = PALETTES[st.session_state.palette_idx]
+    st.session_state.base_blobs = make_default_blobs(st.session_state.layers, st.session_state.wobble, pal, st.session_state.rng)
 
-        # First render
-        self.refresh()
+# Random add button
+if addrand:
+    if st.session_state.mode == "blob":
+        _, pal = PALETTES[st.session_state.palette_idx]
+        st.session_state.added.append({
+            "type": "blob",
+            "cx": float(st.session_state.rng.uniform(-3.5, 3.5)),
+            "cy": float(st.session_state.rng.uniform(-3.5, 3.5)),
+            "radius": float(st.session_state.rng.uniform(0.35, 1.15)),
+            "wobble": float(st.session_state.wobble * st.session_state.rng.uniform(0.85, 1.25)),
+            "color": pal[st.session_state.rng.integers(0, len(pal))],
+            "points": int(st.session_state.rng.integers(200, 260)),
+        })
+    else:
+        heart_palette = [
+            (1.0, 0.4, 0.7, 1.0), (1.0, 0.2, 0.5, 1.0),
+            (0.9, 0.3, 0.9, 1.0), (1.0, 0.85, 0.3, 1.0),
+            (0.6, 0.9, 1.0, 1.0), (0.6, 1.0, 0.6, 1.0),
+            (1.0, 1.0, 1.0, 1.0),
+        ]
+        st.session_state.added.append({
+            "type": "heart",
+            "cx": float(st.session_state.rng.uniform(-3.5, 3.5)),
+            "cy": float(st.session_state.rng.uniform(-3.5, 3.5)),
+            "scale": float(st.session_state.rng.uniform(0.05, 0.13)),
+            "color": heart_palette[st.session_state.rng.integers(0, len(heart_palette))],
+            "points": int(st.session_state.rng.integers(300, 360)),
+        })
 
-        # --- Layout ---
-        controls = pn.Column(
-            pn.Row(self.s_layers, self.s_wobble, self.s_palette),
-            pn.Row(self.b_mode, self.b_clear),
-            sizing_mode="stretch_width"
-        )
-        self.view = pn.Column(self.title, self.fig, controls, sizing_mode="stretch_width")
+# ---------- Compose shapes ----------
+def all_shapes():
+    blobs = list(st.session_state.base_blobs)
+    hearts = list(st.session_state.base_hearts)
+    for s in st.session_state.added:
+        (blobs if s["type"]=="blob" else hearts).append(s)
+    return blobs, hearts
 
-    # ------------------ callbacks ------------------
-    def all_shapes(self):
-        blobs = list(self.store.base_blobs)
-        hearts = list(self.store.base_hearts)
-        for s in self.store.added:
-            (blobs if s["type"]=="blob" else hearts).append(s)
-        return blobs, hearts
+# ---------- Plotly render ----------
+def render_plotly(blobs, hearts):
+    fig = go.Figure()
+    # Background
+    fig.update_layout(
+        width=880, height=880,
+        xaxis=dict(range=[-4,4], showgrid=False, zeroline=False, visible=False),
+        yaxis=dict(range=[-4,4], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1),
+        plot_bgcolor="rgb(13,15,16)", paper_bgcolor="rgb(13,15,16)",
+        margin=dict(l=0, r=0, t=40, b=0)
+    )
 
-    def on_layers_change(self, event):
-        self.layers = int(event.new)
-        _, pal = get_palette(self.palette_idx)
-        self.store.base_blobs = make_default_blobs(self.layers, self.wobble, pal, self.rng)
-        self.refresh()
+    # Blobs
+    for b in blobs:
+        x, y = make_blob(n_points=b["points"], radius=b["radius"], wobble=b["wobble"], irregularity=0.12)
+        x, y = x + b["cx"], y + b["cy"]
+        fig.add_trace(go.Scatter(
+            x=x, y=y,
+            mode="lines",
+            fill="toself",
+            line=dict(width=0),
+            fillcolor=rgba_to_css(b["color"]),
+            hoverinfo="skip",
+            showlegend=False
+        ))
+    # Hearts
+    for h in hearts:
+        hx, hy = make_heart(n_points=h["points"], scale=h["scale"], offset=(h["cx"], h["cy"]))
+        fig.add_trace(go.Scatter(
+            x=hx, y=hy,
+            mode="lines",
+            fill="toself",
+            line=dict(width=0),
+            fillcolor=rgba_to_css(h["color"]),
+            hoverinfo="skip",
+            showlegend=False
+        ))
 
-    def on_wobble_change(self, event):
-        self.wobble = float(event.new)
-        for b in self.store.base_blobs:
-            b["wobble"] = float(self.wobble * (0.9 + 0.25*np.random.rand()))
-        self.refresh()
+    # Invisible dense grid to capture clicks anywhere
+    gx = np.linspace(-4, 4, 90)
+    gy = np.linspace(-4, 4, 90)
+    GX, GY = np.meshgrid(gx, gy)
+    fig.add_trace(go.Scatter(
+        x=GX.ravel(), y=GY.ravel(),
+        mode="markers",
+        marker=dict(size=12, opacity=0.001),
+        hoverinfo="skip",
+        showlegend=False,
+        name="clickgrid"
+    ))
+    fig.update_layout(clickmode="event+select")
+    return fig
 
-    def on_palette_change(self, event):
-        self.palette_idx = int(event.new)
-        _, pal = get_palette(self.palette_idx)
-        for i, b in enumerate(self.store.base_blobs):
-            b["color"] = pal[i % len(pal)]
-        self.refresh()
+name, _ = PALETTES[st.session_state.palette_idx]
+st.markdown(f"**Palette:** {name} | **Mode:** {st.session_state.mode.upper()} | **Added:** {len(st.session_state.added)}")
 
-    def on_clear_added(self, _):
-        self.store.added = []
-        self.refresh()
+blobs, hearts = all_shapes()
+fig = render_plotly(blobs, hearts)
 
-    def on_toggle_mode(self, _):
-        self.mode = "blob" if self.mode == "heart" else "heart"
-        self.b_mode.name = f"Mode: Add {self.mode.upper()}"
+# 捕获点击：返回最近的“隐形点”坐标
+events = plotly_events(fig, click_event=True, select_event=False, override_height=900, override_width=900)
 
-    def on_tap(self, event: Tap):
-        if event.x is None or event.y is None:
-            return
-        x, y = float(event.x), float(event.y)
-        if self.mode == "blob":
-            _, pal = get_palette(self.palette_idx)
-            new_shape = {
-                "type": "blob",
-                "cx": x, "cy": y,
-                "radius": float(self.rng.uniform(0.35, 1.15)),
-                "wobble": float(self.wobble * self.rng.uniform(0.85, 1.25)),
-                "color": pal[self.rng.integers(0, len(pal))],
-                "points": int(self.rng.integers(200, 260)),
-            }
-        else:
-            heart_palette = [
-                (1.0, 0.4, 0.7, 1.0), (1.0, 0.2, 0.5, 1.0),
-                (0.9, 0.3, 0.9, 1.0), (1.0, 0.85, 0.3, 1.0),
-                (0.6, 0.9, 1.0, 1.0), (0.6, 1.0, 0.6, 1.0),
-                (1.0, 1.0, 1.0, 1.0),
-            ]
-            new_shape = {
-                "type": "heart",
-                "cx": x, "cy": y,
-                "scale": float(self.rng.uniform(0.05, 0.13)),
-                "color": heart_palette[self.rng.integers(0, len(heart_palette))],
-                "points": int(self.rng.integers(300, 360)),
-            }
-        self.store.added.append(new_shape)
-        self.refresh()
-
-    def refresh(self):
-        name, _ = get_palette(self.palette_idx)
-        blobs, hearts = self.all_shapes()
-        self.title.object = f"**Palette:** {name} | **Mode:** {self.mode.upper()} | **Added:** {len(self.store.added)}"
-        draw_scene(self.fig, blobs, hearts, add_grain=True)
-
-# ---------- bootstrap ----------
-pn.extension()
-_app = PosterApp()
-app = _app.view
-
-if __name__ == "__main__":
-    pn.serve({"app": app}, show=True)
+# 如果点击了，按当前模式添加形状
+if events:
+    last = events[-1]
+    cx, cy = float(last["x"]), float(last["y"])
+    if st.session_state.mode == "blob":
+        _, pal = PALETTES[st.session_state.palette_idx]
+        st.session_state.added.append({
+            "type": "blob",
+            "cx": cx, "cy": cy,
+            "radius": float(st.session_state.rng.uniform(0.35, 1.15)),
+            "wobble": float(st.session_state.wobble * st.session_state.rng.uniform(0.85, 1.25)),
+            "color": pal[st.session_state.rng.integers(0, len(pal))],
+            "points": int(st.session_state.rng.integers(200, 260)),
+        })
+    else:
+        heart_palette = [
+            (1.0, 0.4, 0.7, 1.0), (1.0, 0.2, 0.5, 1.0),
+            (0.9, 0.3, 0.9, 1.0), (1.0, 0.85, 0.3, 1.0),
+            (0.6, 0.9, 1.0, 1.0), (0.6, 1.0, 0.6, 1.0),
+            (1.0, 1.0, 1.0, 1.0),
+        ]
+        st.session_state.added.append({
+            "type": "heart",
+            "cx": cx, "cy": cy,
+            "scale": float(st.session_state.rng.uniform(0.05, 0.13)),
+            "color": heart_palette[st.session_state.rng.integers(0, len(heart_palette))],
+            "points": int(st.session_state.rng.integers(300, 360)),
+        })
+    st.rerun()
