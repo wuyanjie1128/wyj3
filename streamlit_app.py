@@ -33,10 +33,11 @@ PALETTES = [
 ]
 
 def rgba_to_css(rgba: Tuple[float, float, float, float]) -> str:
-    r, g, b, a = rgba
-    return f"rgba({int(r*255)},{int(g*255)},{int(b*255)},{a:.3f})"
+    # 固定更高的不透明度，避免在任何主题下显得过暗
+    r, g, b, _a = rgba
+    return f"rgba({int(r*255)},{int(g*255)},{int(b*255)},0.98)"
 
-# Geometry helpers (same math, Streamlit-safe)
+# Geometry helpers
 def chaikin_smooth(x, y, rounds=2, closed=True):
     pts = np.column_stack([x, y])
     if closed:
@@ -133,15 +134,16 @@ def init_state():
         st.session_state.mode = "heart"
 
 init_state()
-
 st.set_page_config(page_title="Poster App (Streamlit)", layout="wide")
 
 # ---------- Sidebar controls ----------
 st.sidebar.title("Controls")
 layers = st.sidebar.slider("Layers", 6, 12, st.session_state.layers, 1)
 wobble = st.sidebar.slider("Wobble", 0.10, 0.70, float(st.session_state.wobble), 0.01)
-palette_idx = st.sidebar.selectbox("Palette", list(range(len(PALETTES))), index=st.session_state.palette_idx,
-                                   format_func=lambda i: PALETTES[i][0])
+palette_idx = st.sidebar.selectbox(
+    "Palette", list(range(len(PALETTES))), index=st.session_state.palette_idx,
+    format_func=lambda i: PALETTES[i][0]
+)
 
 col1, col2, col3 = st.sidebar.columns(3)
 toggle = col1.button(f"Mode: {'Add BLOB' if st.session_state.mode=='heart' else 'Add HEART'}")
@@ -150,7 +152,6 @@ addrand = col3.button("Add Random")
 
 if toggle:
     st.session_state.mode = "blob" if st.session_state.mode == "heart" else "heart"
-
 if clear:
     st.session_state.added = []
 
@@ -162,9 +163,8 @@ if abs(wobble - st.session_state.wobble) > 1e-9:
     st.session_state.wobble = float(wobble); changed = True
 if palette_idx != st.session_state.palette_idx:
     st.session_state.palette_idx = int(palette_idx); changed = True
-
 if changed:
-    name, pal = PALETTES[st.session_state.palette_idx]
+    _, pal = PALETTES[st.session_state.palette_idx]
     st.session_state.base_blobs = make_default_blobs(st.session_state.layers, st.session_state.wobble, pal, st.session_state.rng)
 
 # Random add button
@@ -196,7 +196,7 @@ if addrand:
             "points": int(st.session_state.rng.integers(300, 360)),
         })
 
-# ---------- Compose shapes ----------
+# ---------- Compose all shapes ----------
 def all_shapes():
     blobs = list(st.session_state.base_blobs)
     hearts = list(st.session_state.base_hearts)
@@ -204,56 +204,48 @@ def all_shapes():
         (blobs if s["type"]=="blob" else hearts).append(s)
     return blobs, hearts
 
-# ---------- Plotly render ----------
+# ---------- Plotly render (已修复“全黑”问题) ----------
 def render_plotly(blobs, hearts):
-    import plotly.graph_objects as go
     fig = go.Figure()
 
-    # 1) 用白色背景，便于确认颜色
+    # 白色背景 + 固定比例 + 只发事件不做“选中/未选中”切换
     fig.update_layout(
         width=880, height=880,
         xaxis=dict(range=[-4,4], showgrid=False, zeroline=False, visible=False),
         yaxis=dict(range=[-4,4], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1),
         plot_bgcolor="white", paper_bgcolor="white",
         margin=dict(l=0, r=0, t=40, b=0),
-        # 2) 只发 click 事件，不触发“选中/未选中”状态（否则 Plotly 会把未选中层整体变暗）
-        clickmode="event"
+        clickmode="event"  # 只发click事件，不触发选中态（避免其他图层被淡化）
     )
 
-    # 3) 画 blobs（强制 opacity=1，且禁用选中/未选中淡化）
+    # Blobs
     for b in blobs:
         x, y = make_blob(n_points=b["points"], radius=b["radius"], wobble=b["wobble"], irregularity=0.12)
         x, y = x + b["cx"], y + b["cy"]
         fig.add_trace(go.Scatter(
-            x=x, y=y,
-            mode="lines",
-            fill="toself",
+            x=x, y=y, mode="lines", fill="toself",
             line=dict(width=0),
             fillcolor=rgba_to_css(b["color"]),
             opacity=1.0,
-            hoverinfo="skip",
-            showlegend=False,
+            hoverinfo="skip", showlegend=False,
             selected=dict(marker=dict(opacity=1), line=dict(width=0)),
             unselected=dict(marker=dict(opacity=1), line=dict(width=0)),
         ))
 
-    # 3) 画 hearts（同上）
+    # Hearts
     for h in hearts:
         hx, hy = make_heart(n_points=h["points"], scale=h["scale"], offset=(h["cx"], h["cy"]))
         fig.add_trace(go.Scatter(
-            x=hx, y=hy,
-            mode="lines",
-            fill="toself",
+            x=hx, y=hy, mode="lines", fill="toself",
             line=dict(width=0),
             fillcolor=rgba_to_css(h["color"]),
             opacity=1.0,
-            hoverinfo="skip",
-            showlegend=False,
+            hoverinfo="skip", showlegend=False,
             selected=dict(marker=dict(opacity=1), line=dict(width=0)),
             unselected=dict(marker=dict(opacity=1), line=dict(width=0)),
         ))
 
-    # 4) 点击捕获层：只发事件，不让它真的“选中”任何东西
+    # 点击捕获层（隐形网格，不改变任何选中状态）
     gx = np.linspace(-4, 4, 90)
     gy = np.linspace(-4, 4, 90)
     GX, GY = np.meshgrid(gx, gy)
@@ -261,30 +253,26 @@ def render_plotly(blobs, hearts):
         x=GX.ravel(), y=GY.ravel(),
         mode="markers",
         marker=dict(size=12, opacity=0.001),
-        hoverinfo="skip",
-        showlegend=False,
-        name="clickgrid"
+        hoverinfo="skip", showlegend=False, name="clickgrid"
     ))
 
-    # 保险：清空任何可能的选中状态（有些浏览器上第一次点击会残留）
+    # 保险：清空潜在选中状态
     fig.update_traces(selectedpoints=None)
-
     return fig
 
-
+# ---------- UI ----------
 name, _ = PALETTES[st.session_state.palette_idx]
 st.markdown(f"**Palette:** {name} | **Mode:** {st.session_state.mode.upper()} | **Added:** {len(st.session_state.added)}")
 
 blobs, hearts = all_shapes()
 fig = render_plotly(blobs, hearts)
 
-# 捕获点击：返回最近的“隐形点”坐标
+# 捕获点击
 events = plotly_events(fig, click_event=True, select_event=False, override_height=900, override_width=900)
 
-# 如果点击了，按当前模式添加形状
 if events:
     last = events[-1]
-    cx, cy = float(last["x"]), float(last["y"])
+    cx, cy = float(last.get("x", 0.0)), float(last.get("y", 0.0))
     if st.session_state.mode == "blob":
         _, pal = PALETTES[st.session_state.palette_idx]
         st.session_state.added.append({
