@@ -1,3 +1,4 @@
-panel>=1.4,<1.6
-bokeh>=3.3,<3.7
+streamlit>=1.31
+plotly>=5.18
 numpy>=1.23
+streamlit-plotly-events>=0.0.6
