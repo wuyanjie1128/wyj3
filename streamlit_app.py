@@ -28,12 +28,12 @@ PALETTES = [
         (0.63, 0.98, 0.85, 1.0),
         (0.78, 0.78, 1.00, 1.0),
         (0.56, 0.94, 0.94, 1.0),
-        (1.00, 1.00, 1.00, 1.0),
+        (1.00, 1.00, 1.0, 1.0),
     ]),
 ]
 
 def rgba_to_css(rgba: Tuple[float, float, float, float]) -> str:
-    # 固定更高的不透明度，避免在任何主题下显得过暗
+    # 提高不透明度，避免看起来偏暗
     r, g, b, _a = rgba
     return f"rgba({int(r*255)},{int(g*255)},{int(b*255)},0.98)"
 
@@ -204,7 +204,7 @@ def all_shapes():
         (blobs if s["type"]=="blob" else hearts).append(s)
     return blobs, hearts
 
-# ---------- Plotly render (已修复“全黑”问题) ----------
+# ---------- Plotly render (修复 selected/unselected 报错 & “全黑”问题) ----------
 def render_plotly(blobs, hearts):
     fig = go.Figure()
 
@@ -215,34 +215,41 @@ def render_plotly(blobs, hearts):
         yaxis=dict(range=[-4,4], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1),
         plot_bgcolor="white", paper_bgcolor="white",
         margin=dict(l=0, r=0, t=40, b=0),
-        clickmode="event"  # 只发click事件，不触发选中态（避免其他图层被淡化）
+        clickmode="event"  # 只发 click 事件，不触发选中态
     )
 
-    # Blobs
+    # Blobs（不再传 line 到 selected/unselected，避免 ValueError）
     for b in blobs:
         x, y = make_blob(n_points=b["points"], radius=b["radius"], wobble=b["wobble"], irregularity=0.12)
         x, y = x + b["cx"], y + b["cy"]
         fig.add_trace(go.Scatter(
-            x=x, y=y, mode="lines", fill="toself",
+            x=x, y=y,
+            mode="lines",
+            fill="toself",
             line=dict(width=0),
             fillcolor=rgba_to_css(b["color"]),
             opacity=1.0,
-            hoverinfo="skip", showlegend=False,
-            selected=dict(marker=dict(opacity=1), line=dict(width=0)),
-            unselected=dict(marker=dict(opacity=1), line=dict(width=0)),
+            hoverinfo="skip",
+            showlegend=False,
+            # 只保留 marker（即使没 marker 也不会报错；不要放 line）
+            selected=dict(marker=dict(opacity=1.0)),
+            unselected=dict(marker=dict(opacity=1.0)),
         ))
 
-    # Hearts
+    # Hearts（同上）
     for h in hearts:
         hx, hy = make_heart(n_points=h["points"], scale=h["scale"], offset=(h["cx"], h["cy"]))
         fig.add_trace(go.Scatter(
-            x=hx, y=hy, mode="lines", fill="toself",
+            x=hx, y=hy,
+            mode="lines",
+            fill="toself",
             line=dict(width=0),
             fillcolor=rgba_to_css(h["color"]),
             opacity=1.0,
-            hoverinfo="skip", showlegend=False,
-            selected=dict(marker=dict(opacity=1), line=dict(width=0)),
-            unselected=dict(marker=dict(opacity=1), line=dict(width=0)),
+            hoverinfo="skip",
+            showlegend=False,
+            selected=dict(marker=dict(opacity=1.0)),
+            unselected=dict(marker=dict(opacity=1.0)),
         ))
 
     # 点击捕获层（隐形网格，不改变任何选中状态）
@@ -253,7 +260,9 @@ def render_plotly(blobs, hearts):
         x=GX.ravel(), y=GY.ravel(),
         mode="markers",
         marker=dict(size=12, opacity=0.001),
-        hoverinfo="skip", showlegend=False, name="clickgrid"
+        hoverinfo="skip",
+        showlegend=False,
+        name="clickgrid"
     ))
 
     # 保险：清空潜在选中状态
